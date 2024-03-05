@@ -17,7 +17,7 @@
     "init_lr": 0.1,
     "init_weight_decay": 0.0005,
     "batch_size": 128,
-    "num_workers": 8,
+    "num_workers": 0,
     "T": 5,
     "beta": 0.5,
     "alpha1": 1,
@@ -28,8 +28,9 @@
     "per_class": true,
     "full_cov": true,
     "shrink": true,
-    "norm_cov": false,
+    "norm_cov": true,
     "ocsvm_nu": 0.01,
     "ocsvm_gamma": 0.001,
-    "ocsvm_kernel": "rbf"
+    "ocsvm_kernel": "rbf",
+    "optimized_cov_alpha": 100
 }

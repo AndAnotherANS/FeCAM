@@ -1,6 +1,11 @@
 
 import logging
+import math
+import os
+
 import numpy as np
+from sklearn.cluster import KMeans
+from sklearn.pipeline import make_pipeline
 from tqdm import tqdm
 import torch
 
@@ -8,7 +13,7 @@ from torch import nn
 from torch import optim
 from torch import linalg as LA
 from torch.nn import functional as F
-from torch.utils.data import DataLoader,Dataset
+from torch.utils.data import DataLoader, Dataset, TensorDataset
 from models.base import BaseLearner
 from utils.inc_net import CosineIncrementalNet, IncrementalNet
 from utils.toolkit import count_parameters, target2onehot, tensor2numpy
@@ -166,13 +171,78 @@ class FeCAM(BaseLearner):
                         self._diag_mat.append(self.diagonalization(cov))
         
         vectors, y_true = self._extract_vectors(train_loader)
-        vectors = (vectors.T / (np.linalg.norm(vectors.T, axis=0) + EPSILON)).T
+        #vectors = (vectors.T / (np.linalg.norm(vectors.T, axis=0) + EPSILON)).T
 
         classes = np.unique(y_true)
         class_to_data = {cls: [] for cls in classes}
 
         for vector, label in zip(vectors, y_true):
             class_to_data[label].append(vector)
+
+        def mahal(samples, mean, cov):
+            x_minus_mu = F.normalize(samples, p=2, dim=-1) - F.normalize(mean, p=2, dim=-1)
+            inv_covmat = torch.linalg.pinv(cov).float().to(self._device)
+            left_term = torch.matmul(x_minus_mu, inv_covmat)
+            mahal = torch.matmul(left_term, x_minus_mu.T)
+            return torch.diag(mahal)
+
+        class MahaModule(nn.Module):
+            def __init__(self, cov, mean):
+                super().__init__()
+                W = torch.linalg.cholesky(cov)
+                self.register_parameter("cov", nn.Parameter(W))
+                self.register_parameter("mean", nn.Parameter(mean))
+
+            def forward(self, x):
+                dist = torch.distributions.MultivariateNormal(self.mean, scale_tril=torch.tril(self.cov))
+                return dist.log_prob(x)
+            def get_cov(self):
+                return torch.tril(self.cov) @ torch.tril(self.cov).T
+
+        for cls, data in class_to_data.items():
+            if cls < 50:
+                continue
+            data = torch.tensor(np.vstack(data)).cuda().float()
+
+            cov = self._cov_mat_shrink[cls].cuda().float()
+            mean = self._protos[cls].unsqueeze(0).cuda().float()
+            other_covs = [self._cov_mat[i].cuda() for i in range(np.unique(y_true).max()+1) if i != cls]
+            other_means = [self._protos[i].cuda().unsqueeze(0) for i in range(np.unique(y_true).max()+1) if i != cls]
+
+            module = MahaModule(cov, mean).cuda()
+            op = torch.optim.Adam(module.parameters(), 0.000001)
+
+            other_dists = [torch.distributions.MultivariateNormal(m, covariance_matrix=c) for m, c in zip(other_means, other_covs)]
+
+            other_cls_maha = torch.stack([dist.log_prob(data).detach() for dist in other_dists], 1)
+
+            ds = TensorDataset(data, other_cls_maha)
+            dl = DataLoader(ds, batch_size=64, shuffle=True)
+
+            print(torch.distributions.MultivariateNormal(mean, covariance_matrix=cov).log_prob(data).mean())
+
+            for i in range(50):
+                losses = []
+                for x, other in dl:
+                    #x = x[0]
+                    log_prob = module(x)
+                    max_other = torch.max(other, -1, keepdim=True).values
+                    loss = (-log_prob -
+                            (torch.exp(log_prob - max_other.squeeze()) / torch.exp(other - max_other).sum(-1))).mean()
+                    op.zero_grad()
+                    loss.backward()
+                    op.step()
+                    losses.append(loss.item())
+                #print((sum(losses)/len(losses)))
+
+            cov = module.get_cov()
+            self._cov_mat[cls] = cov
+            self._cov_mat_shrink[cls] = self.shrink_cov(cov)
+            self._norm_cov_mat = self.normalize_cov()
+            self._protos[cls] = module.mean.squeeze().detach()
+
+            print(torch.distributions.MultivariateNormal(module.mean.squeeze().detach(), covariance_matrix=cov).log_prob(data).mean())
+
 
 
         # ONE CLASS SVM AFTER GRID
@@ -189,9 +259,9 @@ class FeCAM(BaseLearner):
 
         # ONE_CLASS SVM
 
-        print('TRAINING ONE CLASS SVM')
+        #print('TRAINING ONE CLASS SVM')
 
-        accuracies = []
+        '''accuracies = []
         # gamma = [0.001, 0.01, 0.1, 0.5, 1, 5, 10, 20, 30, 50, 100]
         # nu = [0.01, 0.05, 0.1, 0.3, 0.5, 0.7, 0.9, 0.99]
         
@@ -213,7 +283,7 @@ class FeCAM(BaseLearner):
 
         for cls, data in class_to_data.items():
             model = svm.OneClassSVM(gamma=best_gamma, nu=best_nu, kernel=kernel).fit(data)
-            self._ocsvm_models[cls] = model
+            self._ocsvm_models[cls] = model'''
 
         # ELLIPTIC ENVELOPE
 
@@ -277,7 +347,7 @@ class FeCAM(BaseLearner):
             for class_idx in range(self._known_classes, self._total_classes):
                 data, targets, idx_dataset = self.data_manager.get_dataset(np.arange(class_idx, class_idx+1), source='train',
                                                                     mode='test', shot=self.shot, ret_data=True)
-                idx_loader = DataLoader(idx_dataset, batch_size=self.args["batch_size"], shuffle=False, num_workers=4)
+                idx_loader = DataLoader(idx_dataset, batch_size=self.args["batch_size"], shuffle=False, num_workers=self.args["num_workers"])
                 vectors, _ = self._extract_vectors(idx_loader)
                 class_mean = np.mean(vectors, axis=0)
                 self._protos.append(torch.tensor(class_mean).to(self._device))

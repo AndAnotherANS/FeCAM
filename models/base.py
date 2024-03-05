@@ -58,8 +58,8 @@ class BaseLearner(object):
         cnn_accy = self._evaluate(y_pred, y_true)
 
         if self.args["full_cov"] or self.args["diagonal"]:
-            # y_pred, y_true = self._eval_maha(self.test_loader, self._init_protos, self._protos)
-            y_pred, y_true = self._eval_ocsvm(self.test_loader)
+            y_pred, y_true = self._eval_maha(self.test_loader, self._init_protos, self._protos)
+            # y_pred, y_true = self._eval_ocsvm(self.test_loader)
             # y_pred, y_true = self._eval_isolation_forests(self.test_loader)
             # y_pred, y_true = self._eval_elliptic_envelopes(self.test_loader)
             maha_accy = self._evaluate(y_pred, y_true)
@@ -199,8 +199,7 @@ class BaseLearner(object):
         inv_covmat = torch.linalg.pinv(cov).float().to(self._device)
         left_term = torch.matmul(x_minus_mu, inv_covmat)
         mahal = torch.matmul(left_term, x_minus_mu.T)
-        det = torch.det(2 * torch.pi * cov)
-        return (1 / (torch.sqrt(det) + EPSILON)) * (-torch.exp(-torch.diagonal(mahal, 0)) / 2).cpu().numpy()
+        return torch.diag(mahal).cpu().detach().numpy()
     
     def diagonalization(self, cov):
         diag = cov.clone()
@@ -215,7 +214,7 @@ class BaseLearner(object):
         off_diag.fill_diagonal_(0.0)
         mask = off_diag != 0.0
         off_diag_mean = (off_diag*mask).sum() / mask.sum()
-        iden = torch.eye(cov.shape[0])
+        iden = torch.eye(cov.shape[0]).to(cov)
         alpha1 = self.args["alpha1"]
         alpha2  = self.args["alpha2"]
         cov_ = cov + (alpha1*diag_mean*iden) + (alpha2*off_diag_mean*(1-iden))
