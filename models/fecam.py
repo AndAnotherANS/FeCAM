@@ -180,11 +180,26 @@ class FeCAM(BaseLearner):
             class_to_data[label].append(vector)
 
         def mahal(samples, mean, cov):
+            assert torch.linalg.matrix_rank(cov) == cov.shape[0]
             x_minus_mu = F.normalize(samples, p=2, dim=-1) - F.normalize(mean, p=2, dim=-1)
             inv_covmat = torch.linalg.pinv(cov).float().to(self._device)
             left_term = torch.matmul(x_minus_mu, inv_covmat)
             mahal = torch.matmul(left_term, x_minus_mu.T)
             return torch.diag(mahal)
+
+        def mahal_chol(samples, mean, cov_chol):
+            assert torch.linalg.matrix_rank(cov_chol) == cov_chol.shape[0]
+            x_minus_mu = F.normalize(samples, p=2, dim=-1) - F.normalize(mean, p=2, dim=-1)
+            inv_cov = torch.linalg.pinv(cov_chol).float().to(self._device)
+            left_term = torch.matmul(inv_cov, x_minus_mu.T).T
+            return torch.norm(left_term, 2., -1) ** 2
+
+        # test mahal chol
+        dummy_cov = torch.tril(torch.rand([20, 20]) + 0.5).to(self._device)
+        dummy_mean = torch.zeros([1, 20]).to(self._device)
+        dummy_x = torch.normal(2, 4, [10, 20]).to(self._device)
+        assert torch.allclose(mahal_chol(dummy_x, dummy_mean, dummy_cov), mahal(dummy_x, dummy_mean, dummy_cov @ dummy_cov.T), atol=1e-1)
+
 
         class MahaModule(nn.Module):
             def __init__(self, cov, mean):
@@ -210,11 +225,11 @@ class FeCAM(BaseLearner):
             other_means = [self._protos[i].cuda().unsqueeze(0) for i in range(np.unique(y_true).max()+1) if i != cls]
 
             module = MahaModule(cov, mean).cuda()
-            op = torch.optim.Adam(module.parameters(), 0.000001)
+            op = torch.optim.Adam(module.parameters(), 0.00001)
 
-            other_dists = [torch.distributions.MultivariateNormal(m, covariance_matrix=c) for m, c in zip(other_means, other_covs)]
+            other_dists = [(m, c) for m, c in zip(other_means, other_covs)]
 
-            other_cls_maha = torch.stack([dist.log_prob(data).detach() for dist in other_dists], 1)
+            other_cls_maha = torch.stack([-mahal(data, m, c).detach() for m, c in other_dists], 1)
 
             ds = TensorDataset(data, other_cls_maha)
             dl = DataLoader(ds, batch_size=64, shuffle=True)
@@ -226,9 +241,13 @@ class FeCAM(BaseLearner):
                 for x, other in dl:
                     #x = x[0]
                     log_prob = module(x)
-                    max_other = torch.max(other, -1, keepdim=True).values
-                    loss = (-log_prob -
-                            (torch.exp(log_prob - max_other.squeeze()) / torch.exp(other - max_other).sum(-1))).mean()
+                    maha_x = -mahal_chol(x, module.mean, torch.tril(module.cov))
+
+                    max_other = torch.max(torch.cat([other, maha_x.unsqueeze(-1)], -1), -1, keepdim=True).values
+                    softmax_nom = torch.exp(maha_x - max_other.squeeze())
+                    softmax_denom = torch.exp(maha_x - max_other.squeeze()) + torch.exp(other - max_other).sum(-1)
+                    loss = (-log_prob - (softmax_nom / softmax_denom)).mean()
+
                     op.zero_grad()
                     loss.backward()
                     op.step()
