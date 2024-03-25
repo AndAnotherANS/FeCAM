@@ -221,11 +221,11 @@ class FeCAM(BaseLearner):
 
             cov = self._cov_mat_shrink[cls].cuda().float()
             mean = self._protos[cls].unsqueeze(0).cuda().float()
-            other_covs = [self._cov_mat[i].cuda() for i in range(np.unique(y_true).max()+1) if i != cls]
+            other_covs = [self._cov_mat_shrink[i].cuda() for i in range(np.unique(y_true).max()+1) if i != cls]
             other_means = [self._protos[i].cuda().unsqueeze(0) for i in range(np.unique(y_true).max()+1) if i != cls]
 
             module = MahaModule(cov, mean).cuda()
-            op = torch.optim.Adam(module.parameters(), 0.00001)
+            op = torch.optim.Adam(module.parameters(), 0.0001)
 
             other_dists = [(m, c) for m, c in zip(other_means, other_covs)]
 
@@ -246,7 +246,7 @@ class FeCAM(BaseLearner):
                     max_other = torch.max(torch.cat([other, maha_x.unsqueeze(-1)], -1), -1, keepdim=True).values
                     softmax_nom = torch.exp(maha_x - max_other.squeeze())
                     softmax_denom = torch.exp(maha_x - max_other.squeeze()) + torch.exp(other - max_other).sum(-1)
-                    loss = (-log_prob - (softmax_nom / softmax_denom)).mean()
+                    loss = (-log_prob - self.args["optimized_cov_alpha"] * (softmax_nom / softmax_denom)).mean()
 
                     op.zero_grad()
                     loss.backward()
