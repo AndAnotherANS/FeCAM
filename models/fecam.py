@@ -200,6 +200,20 @@ class FeCAM(BaseLearner):
         dummy_x = torch.normal(2, 4, [10, 20]).to(self._device)
         assert torch.allclose(mahal_chol(dummy_x, dummy_mean, dummy_cov), mahal(dummy_x, dummy_mean, dummy_cov @ dummy_cov.T), atol=1e-1)
 
+        def normalize_chol(chol):
+            diagonal = (chol ** 2) @ torch.ones(chol.shape[0]).to(chol)
+            normalized = torch.diagflat((diagonal) ** -(0.5) ) @ chol
+            return normalized
+
+        def normalize_full(cov):
+            sd = torch.sqrt(torch.diagonal(cov))  # standard deviations of the variables
+            cov = cov / (torch.matmul(sd.unsqueeze(1), sd.unsqueeze(0)))
+            return cov
+
+        # test normalization
+        norm_chol = normalize_chol(dummy_cov)
+        assert torch.allclose(norm_chol @ norm_chol.T, normalize_full(dummy_cov @ dummy_cov.T))
+
 
         class MahaModule(nn.Module):
             def __init__(self, cov, mean):
@@ -221,7 +235,7 @@ class FeCAM(BaseLearner):
 
             cov = self._cov_mat_shrink[cls].cuda().float()
             mean = self._protos[cls].unsqueeze(0).cuda().float()
-            other_covs = [self._cov_mat_shrink[i].cuda() for i in range(np.unique(y_true).max()+1) if i != cls]
+            other_covs = [normalize_full(self._cov_mat_shrink[i]).cuda() for i in range(np.unique(y_true).max()+1) if i != cls]
             other_means = [self._protos[i].cuda().unsqueeze(0) for i in range(np.unique(y_true).max()+1) if i != cls]
 
             module = MahaModule(cov, mean).cuda()
@@ -241,7 +255,7 @@ class FeCAM(BaseLearner):
                 for x, other in dl:
                     #x = x[0]
                     log_prob = module(x)
-                    maha_x = -mahal_chol(x, module.mean, torch.tril(module.cov))
+                    maha_x = -mahal_chol(x, module.mean, normalize_chol(torch.tril(module.cov)))
 
                     max_other = torch.max(torch.cat([other, maha_x.unsqueeze(-1)], -1), -1, keepdim=True).values
                     softmax_nom = torch.exp(maha_x - max_other.squeeze())
