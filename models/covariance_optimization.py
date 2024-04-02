@@ -64,7 +64,7 @@ class MahaModule(nn.Module):
         self.register_parameter("mean", nn.Parameter(mean))
 
     def forward(self, x):
-        dist = torch.distributions.MultivariateNormal(self.mean, scale_tril=torch.tril(self.cov))
+        dist = torch.distributions.MultivariateNormal(self.mean, scale_tril=normalize_chol(torch.tril(self.cov)))
         return dist.log_prob(x)
 
     def get_cov(self):
@@ -168,7 +168,7 @@ def optimize_covariance(data_train, data_test, max_cls, cls, model):
     plt.plot(np.arange(n_iters), softmax_test)
     ax.set_title("Softmax loss term on test set")
 
-    fig.savefig(f"loss_history/current_run/class_{cls}_{str(model.args['optimized_cov_alpha']).replace('.', '_')}.png")
+    fig.savefig(f"loss_histories/current_run/class_{cls}_{str(model.args['optimized_cov_alpha']).replace('.', '_')}.png")
 
     # replace current covariance matrix with the optimized one
     cov = module.get_cov()
