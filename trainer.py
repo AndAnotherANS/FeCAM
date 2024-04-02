@@ -69,10 +69,12 @@ def _train(args):
     cnn_curve, nme_curve, fecam_curve = {"top1": [], "top5": []}, {"top1": [], "top5": []}, {"top1": [], "top5": []}
     for task in range(data_manager.nb_tasks):
         model.incremental_train(data_manager)
-        cnn_accy, nme_accy, fecam_accy = model.eval_task()
+        cnn_accy, nme_accy, fecam_accy, train_acc = model.eval_task()
         model.after_task()
 
         json.dump(fecam_accy, file)
+
+        logging.info("training results: {}".format(train_acc["grouped"]))
 
         if nme_accy is not None and fecam_accy is None:
             logging.info("CNN: {}".format(cnn_accy["grouped"]))

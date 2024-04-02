@@ -15,6 +15,7 @@ from torch import linalg as LA
 from torch.nn import functional as F
 from torch.utils.data import DataLoader, Dataset, TensorDataset
 from models.base import BaseLearner
+from models.covariance_optimization import optimize_covariance
 from utils.inc_net import CosineIncrementalNet, IncrementalNet
 from utils.toolkit import count_parameters, target2onehot, tensor2numpy
 from torchvision import datasets, transforms
@@ -101,6 +102,11 @@ class FeCAM(BaseLearner):
         self.test_loader = DataLoader(
             test_dataset, batch_size=self.args["batch_size"], shuffle=False, num_workers=self.args["num_workers"])
 
+        train_dataset_full = data_manager.get_dataset(np.arange(0, self._total_classes), source='train',
+                                                 mode='train', shot=self.shot)
+        self.train_loader_full = DataLoader(
+            train_dataset_full, batch_size=self.args["batch_size"], shuffle=True, num_workers=self.args["num_workers"], pin_memory=True)
+
         if len(self._multiple_gpus) > 1:
             self._network = nn.DataParallel(self._network, self._multiple_gpus)
         self._train(self.train_loader, self.test_loader)
@@ -174,108 +180,21 @@ class FeCAM(BaseLearner):
         #vectors = (vectors.T / (np.linalg.norm(vectors.T, axis=0) + EPSILON)).T
 
         classes = np.unique(y_true)
+        max_cls = classes.max()
         class_to_data = {cls: [] for cls in classes}
+
+        vectors_test, y_true_test = self._extract_vectors(test_loader)
+
 
         for vector, label in zip(vectors, y_true):
             class_to_data[label].append(vector)
 
-        def mahal(samples, mean, cov):
-            assert torch.linalg.matrix_rank(cov) == cov.shape[0]
-            x_minus_mu = F.normalize(samples, p=2, dim=-1) - F.normalize(mean, p=2, dim=-1)
-            inv_covmat = torch.linalg.pinv(cov).float().to(self._device)
-            left_term = torch.matmul(x_minus_mu, inv_covmat)
-            mahal = torch.matmul(left_term, x_minus_mu.T)
-            return torch.diag(mahal)
-
-        def mahal_chol(samples, mean, cov_chol):
-            assert torch.linalg.matrix_rank(cov_chol) == cov_chol.shape[0]
-            x_minus_mu = F.normalize(samples, p=2, dim=-1) - F.normalize(mean, p=2, dim=-1)
-            inv_cov = torch.linalg.pinv(cov_chol).float().to(self._device)
-            left_term = torch.matmul(inv_cov, x_minus_mu.T).T
-            return torch.norm(left_term, 2., -1) ** 2
-
-        # test mahal chol
-        dummy_cov = torch.tril(torch.rand([20, 20]) + 0.5).to(self._device)
-        dummy_mean = torch.zeros([1, 20]).to(self._device)
-        dummy_x = torch.normal(2, 4, [10, 20]).to(self._device)
-        assert torch.allclose(mahal_chol(dummy_x, dummy_mean, dummy_cov), mahal(dummy_x, dummy_mean, dummy_cov @ dummy_cov.T), atol=1e-1)
-
-        def normalize_chol(chol):
-            diagonal = (chol ** 2) @ torch.ones(chol.shape[0]).to(chol)
-            normalized = torch.diagflat((diagonal) ** -(0.5) ) @ chol
-            return normalized
-
-        def normalize_full(cov):
-            sd = torch.sqrt(torch.diagonal(cov))  # standard deviations of the variables
-            cov = cov / (torch.matmul(sd.unsqueeze(1), sd.unsqueeze(0)))
-            return cov
-
-        # test normalization
-        norm_chol = normalize_chol(dummy_cov)
-        assert torch.allclose(norm_chol @ norm_chol.T, normalize_full(dummy_cov @ dummy_cov.T))
-
-
-        class MahaModule(nn.Module):
-            def __init__(self, cov, mean):
-                super().__init__()
-                W = torch.linalg.cholesky(cov)
-                self.register_parameter("cov", nn.Parameter(W))
-                self.register_parameter("mean", nn.Parameter(mean))
-
-            def forward(self, x):
-                dist = torch.distributions.MultivariateNormal(self.mean, scale_tril=torch.tril(self.cov))
-                return dist.log_prob(x)
-            def get_cov(self):
-                return torch.tril(self.cov) @ torch.tril(self.cov).T
-
         for cls, data in class_to_data.items():
             if cls < 50:
                 continue
-            data = torch.tensor(np.vstack(data)).cuda().float()
-
-            cov = self._cov_mat_shrink[cls].cuda().float()
-            mean = self._protos[cls].unsqueeze(0).cuda().float()
-            other_covs = [normalize_full(self._cov_mat_shrink[i]).cuda() for i in range(np.unique(y_true).max()+1) if i != cls]
-            other_means = [self._protos[i].cuda().unsqueeze(0) for i in range(np.unique(y_true).max()+1) if i != cls]
-
-            module = MahaModule(cov, mean).cuda()
-            op = torch.optim.Adam(module.parameters(), 0.0001)
-
-            other_dists = [(m, c) for m, c in zip(other_means, other_covs)]
-
-            other_cls_maha = torch.stack([-mahal(data, m, c).detach() for m, c in other_dists], 1)
-
-            ds = TensorDataset(data, other_cls_maha)
-            dl = DataLoader(ds, batch_size=64, shuffle=True)
-
-            print(torch.distributions.MultivariateNormal(mean, covariance_matrix=cov).log_prob(data).mean())
-
-            for i in range(50):
-                losses = []
-                for x, other in dl:
-                    #x = x[0]
-                    log_prob = module(x)
-                    maha_x = -mahal_chol(x, module.mean, normalize_chol(torch.tril(module.cov)))
-
-                    max_other = torch.max(torch.cat([other, maha_x.unsqueeze(-1)], -1), -1, keepdim=True).values
-                    softmax_nom = torch.exp(maha_x - max_other.squeeze())
-                    softmax_denom = torch.exp(maha_x - max_other.squeeze()) + torch.exp(other - max_other).sum(-1)
-                    loss = (-log_prob - self.args["optimized_cov_alpha"] * (softmax_nom / softmax_denom)).mean()
-
-                    op.zero_grad()
-                    loss.backward()
-                    op.step()
-                    losses.append(loss.item())
-                #print((sum(losses)/len(losses)))
-
-            cov = module.get_cov()
-            self._cov_mat[cls] = cov
-            self._cov_mat_shrink[cls] = self.shrink_cov(cov)
-            self._norm_cov_mat = self.normalize_cov()
-            self._protos[cls] = module.mean.squeeze().detach()
-
-            print(torch.distributions.MultivariateNormal(module.mean.squeeze().detach(), covariance_matrix=cov).log_prob(data).mean())
-
+            if self.args["optimized_cov_alpha"] != 0:
+                data_test = vectors_test[y_true_test == cls]
+                optimize_covariance(data, data_test, max_cls, cls, self)
 
 
         # ONE CLASS SVM AFTER GRID

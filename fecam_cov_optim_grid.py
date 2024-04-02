@@ -2,7 +2,7 @@ import itertools
 import subprocess
 import json
 
-alpha_vals = [1000, 0.001, 0.1, 1, 10, 100]
+alpha_vals = [10000, 20000, 30000, 40000, 50000, 60000, 70000, 80000, 90000, 100000]
 
 config_path = './exps/FeCAM_cifar100.json'
 
