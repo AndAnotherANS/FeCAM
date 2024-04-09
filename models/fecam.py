@@ -183,7 +183,6 @@ class FeCAM(BaseLearner):
         max_cls = classes.max()
         class_to_data = {cls: [] for cls in classes}
 
-        vectors_test, y_true_test = self._extract_vectors(test_loader)
 
 
         for vector, label in zip(vectors, y_true):
@@ -193,8 +192,7 @@ class FeCAM(BaseLearner):
             if cls < 50:
                 continue
             if self.args["optimized_cov_alpha"] != 0:
-                data_test = vectors_test[y_true_test == cls]
-                optimize_covariance(data, data_test, max_cls, cls, self)
+                optimize_covariance(data, max_cls, cls, self)
 
 
         # ONE CLASS SVM AFTER GRID

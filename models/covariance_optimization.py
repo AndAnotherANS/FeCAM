@@ -1,9 +1,12 @@
+import copy
+
+import PIL
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
 from torch import nn
 from torch.nn import functional as F
-from torch.utils.data import TensorDataset, DataLoader
+from torch.utils.data import TensorDataset, DataLoader, Subset
 
 
 def mahal(samples, mean, cov):
@@ -12,7 +15,6 @@ def mahal(samples, mean, cov):
     calculates (x - mu) @ sigma @ (x - mu).T
     function copied from base.py
     """
-    assert torch.linalg.matrix_rank(cov) == cov.shape[0]
     x_minus_mu = F.normalize(samples, p=2, dim=-1) - F.normalize(mean, p=2, dim=-1)
     inv_covmat = torch.linalg.pinv(cov).float().to(x_minus_mu)
     left_term = torch.matmul(x_minus_mu, inv_covmat)
@@ -25,7 +27,6 @@ def mahal_chol(samples, mean, cov_chol):
     compute mahalanobis distance using cholesky decomposition of covariance matrix
     calculates squared euclidean norm of L @ (x - mu) where L @ L.T is the covariance matrix
     """
-    assert torch.linalg.matrix_rank(cov_chol) == cov_chol.shape[0]
     x_minus_mu = F.normalize(samples, p=2, dim=-1) - F.normalize(mean, p=2, dim=-1)
     inv_cov = torch.linalg.pinv(cov_chol).float().to(x_minus_mu)
     left_term = torch.matmul(inv_cov, x_minus_mu.T).T
@@ -57,6 +58,7 @@ class MahaModule(nn.Module):
     Module for keeping parameters representing covariance and center of the multivariate gaussian
     covariance cholesky decomposition is represented as square matrix, of which lower triangular part L is only used
     """
+
     def __init__(self, cov, mean):
         super().__init__()
         W = torch.linalg.cholesky(cov)
@@ -91,7 +93,7 @@ def get_loss(cov_module: MahaModule, x, other):
     return log_prob, softmax_nom / softmax_denom
 
 
-def optimize_covariance(data_train, data_test, max_cls, cls, model):
+def optimize_covariance(data, max_cls, cls, model):
     """
     Initialize covariance to one used in FeCAM and optimize it according to the get_loss function
     """
@@ -106,31 +108,43 @@ def optimize_covariance(data_train, data_test, max_cls, cls, model):
 
     # initialize module and optimizer
     module = MahaModule(cov, mean).cuda()
-    op = torch.optim.Adam(module.parameters(), 0.00001)
+    op = torch.optim.Adam(module.parameters(), model.args["cov_optim_lr"])
 
     other_dists = [(m, c) for m, c in zip(other_means, other_covs)]
 
     # prepare train data
-    data_train = torch.tensor(np.vstack(data_train)).cuda().float()
+    data = torch.tensor(np.vstack(data)).cuda().float()
+
+    # prepare validation split
+    n_samples = data.shape[0]
+    permuted_indices = torch.randperm(n_samples)
+    train_indices = permuted_indices[:int(0.9 * n_samples)]
+    val_indices = permuted_indices[int(0.9 * n_samples):]
+
+    data_val = data[val_indices]
+    data_train = data[train_indices]
+
+    # compute mahalanobis distances to other distributions
     other_cls_maha_train = torch.stack([-mahal(data_train, m, c).detach() for m, c in other_dists], 1)
+    other_cls_maha_val = torch.stack([-mahal(data_val, m, c).detach() for m, c in other_dists], 1)
 
+    # initialize dataloader
     ds_train = TensorDataset(data_train, other_cls_maha_train)
-    dl_train = DataLoader(ds_train, batch_size=64, shuffle=True)
-
-    # prepare test data
-    data_test = torch.tensor(np.vstack(data_test)).cuda().float()
-    other_cls_maha_test = torch.stack([-mahal(data_test, m, c).detach() for m, c in other_dists], 1)
-
+    dl_train = DataLoader(ds_train, batch_size=model.args["cov_optim_batch_size"], shuffle=True)
 
     # initialize lists for historic loss values
-    log_probs_test = []
+    log_probs_val = []
     log_probs_train = []
-    softmax_test = []
+    softmax_val = []
     softmax_train = []
 
-    n_iters = 40  # fixed, for now
+    max_iters = 40  # fixed, for now
+    best_model_dict = None  # variable holding best model parameters in terms of loss on validation split
+    best_val_loss = torch.inf
+    patience = 0
+    actual_iters = max_iters
 
-    for i in range(n_iters):
+    for i in range(max_iters):
         # training loop
         for x, other in dl_train:
             log_prob, softmax = get_loss(module, x, other)
@@ -140,37 +154,56 @@ def optimize_covariance(data_train, data_test, max_cls, cls, model):
             loss.backward()
             op.step()
 
-        # evaluation
-        # train
-        log_prob, softmax = get_loss(module, data_train, other_cls_maha_train)
-        log_probs_train.append(log_prob.detach().cpu().mean().item())
-        softmax_train.append(softmax.detach().cpu().mean().item())
-        # test
-        log_prob, softmax = get_loss(module, data_test, other_cls_maha_test)
-        log_probs_test.append(log_prob.detach().cpu().mean().item())
-        softmax_test.append(softmax.detach().cpu().mean().item())
+        with torch.no_grad():
+            # validation
+            log_prob, softmax = get_loss(module, data_val, other_cls_maha_val)
+            log_probs_val.append(-log_prob.detach().cpu().mean().item())
+            softmax_val.append(-softmax.detach().cpu().mean().item())
+
+            val_loss = (-softmax).mean()
+            if val_loss < best_val_loss:
+                best_val_loss = val_loss
+                best_model_dict = module.state_dict()
+                patience = 0
+            else:
+                patience += 1
+
+            # save loss history
+            log_prob, softmax = get_loss(module, data_train, other_cls_maha_train)
+            log_probs_train.append(-log_prob.detach().cpu().mean().item())
+            softmax_train.append(-softmax.detach().cpu().mean().item())
+
+
+        if patience > 3:
+            actual_iters = i + 1
+            break
+
 
     # plot loss history and save to file
     fig = plt.figure(figsize=[10, 10])
     ax = plt.subplot(221)
-    plt.plot(np.arange(n_iters), log_probs_train)
+    plt.plot(np.arange(actual_iters), log_probs_train)
     ax.set_title("Log probabilities on train set")
 
     ax = plt.subplot(222)
-    plt.plot(np.arange(n_iters), log_probs_test)
-    ax.set_title("Log probabilities on test set")
+    plt.plot(np.arange(actual_iters), log_probs_val)
+    ax.set_title("Log probabilities on val set")
 
     ax = plt.subplot(223)
-    plt.plot(np.arange(n_iters), softmax_train)
+    plt.plot(np.arange(actual_iters), softmax_train)
     ax.set_title("Softmax loss term on train set")
 
     ax = plt.subplot(224)
-    plt.plot(np.arange(n_iters), softmax_test)
-    ax.set_title("Softmax loss term on test set")
+    plt.plot(np.arange(actual_iters), softmax_val)
+    ax.set_title("Softmax loss term on val set")
+    ax.axhline(y=best_val_loss.detach().cpu().numpy(), xmin=0, xmax=actual_iters)
 
-    fig.savefig(f"loss_histories/current_run/class_{cls}_{str(model.args['optimized_cov_alpha']).replace('.', '_')}.png")
+    model.args["neptune"][f"loss_histories/class_{cls}"].upload(fig)
+    plt.close(fig)
 
     # replace current covariance matrix with the optimized one
+    module.load_state_dict(best_model_dict)
+
     cov = module.get_cov()
     model._cov_mat[cls] = cov
     model._cov_mat_shrink[cls] = model.shrink_cov(cov)

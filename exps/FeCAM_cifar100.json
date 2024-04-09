@@ -32,5 +32,7 @@
     "ocsvm_nu": 0.01,
     "ocsvm_gamma": 0.001,
     "ocsvm_kernel": "rbf",
-    "optimized_cov_alpha": 10
+    "optimized_cov_alpha": 10000,
+    "cov_optim_lr": 0.0001,
+    "cov_optim_batch_size": 16
 }

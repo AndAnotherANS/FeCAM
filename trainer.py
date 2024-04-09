@@ -34,7 +34,7 @@ def _train(args):
     if not os.path.exists(logs_name):
         os.makedirs(logs_name)
 
-    logfilename = "logs/{}/{}/{}/{}/{}_{}_{}".format(
+    logfilename = "logs/{}/{}/{}/{}/{}_{}_{}_{}".format(
         args["model_name"],
         args["dataset"],
         init_cls,
@@ -42,6 +42,7 @@ def _train(args):
         args["prefix"],
         args["seed"],
         args["convnet_type"],
+        args["run_n"]
     )
     logging.basicConfig(
         level=logging.INFO,
@@ -128,23 +129,7 @@ def _train(args):
 
     file.close()
 
-    assert len(model._original_covs) == 100, 'Did not calculated covs before transformations'
-    assert len(model._cov_mat) == 100, 'Did not calculated covs after transformations'
-    print('SAVING COVARIANCES')
-    np.save('original_covs.npy', np.array(model._original_covs))
-    np.save('transformed_covs.npy', np.array(model._cov_mat))
-
-    # eigvals = np.array([])
-    # for i in range(0, 100):
-    #     cov = model._original_covs[i]
-    #     eigvals = np.linalg.eigvals(cov.detach().cpu().numpy())
-    #     eigvals = -np.sort(-np.abs(eigvals))
-
-    #     sns.histplot(eigvals)
-    #     plt.show()
-
-    #     print('eigvals', eigvals)
-    #     print('cumsum', np.cumsum(eigvals / eigvals.sum()))
+    args["neptune"].upload(logfilename + ".log")
 
 
 def _set_device(args):
