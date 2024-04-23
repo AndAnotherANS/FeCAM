@@ -61,7 +61,9 @@ class BaseNet(nn.Module):
         return self.convnet.out_dim
 
     def extract_vector(self, x):
-        return self.convnet(x)["features"]
+        output = self.convnet(x)
+        return torch.cat([output["features"], torch.nn.functional.adaptive_avg_pool2d(output["fmaps"][-2], 1).squeeze()], -1)
+        #return torch.nn.functional.adaptive_avg_pool2d(output["fmaps"][-2], 1).squeeze()
 
     def forward(self, x):
         x = self.convnet(x)
@@ -182,6 +184,8 @@ class CosineIncrementalNet(BaseNet):
         self.nb_proxy = nb_proxy
 
     def update_fc(self, nb_classes, task_num):
+        if task_num > 1:
+            return
         fc = self.generate_fc(self.feature_dim, nb_classes)
         if self.fc is not None:
             if task_num == 1:

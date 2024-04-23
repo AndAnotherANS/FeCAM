@@ -8,10 +8,13 @@ from trainer import train
 
 
 def init_neptune(args):
-    run = neptune.init_run()
-    run["model/parameters"] = args
-    run["gridsearch_run_n"] = os.environ["GRIDSEARCH_RUN_N"]
-    return run
+    if args["use_neptune"]:
+        run = neptune.init_run()
+        run["model/parameters"] = args
+        run["gridsearch_run_n"] = os.environ["GRIDSEARCH_RUN_N"]
+        return run
+    else:
+        return None
 
 def main():
     args = setup_parser().parse_args()

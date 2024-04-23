@@ -23,7 +23,7 @@
     "alpha1": 1,
     "alpha2": 1,
     "ncm": false,
-    "tukey": false,
+    "tukey": true,
     "diagonal": false,
     "per_class": true,
     "full_cov": true,
@@ -32,7 +32,8 @@
     "ocsvm_nu": 0.01,
     "ocsvm_gamma": 0.001,
     "ocsvm_kernel": "rbf",
-    "optimized_cov_alpha": 10000,
-    "cov_optim_lr": 0.0001,
-    "cov_optim_batch_size": 16
+    "optimized_cov_alpha": 0,
+    "cov_optim_lr": 1e-05,
+    "cov_optim_batch_size": 16,
+    "use_neptune": false
 }

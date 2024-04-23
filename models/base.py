@@ -54,8 +54,8 @@ class BaseLearner(object):
         return ret
 
     def eval_task(self):
-        y_pred, y_true = self._eval_cnn(self.test_loader)
-        cnn_accy = self._evaluate(y_pred, y_true)
+        #y_pred, y_true = self._eval_cnn(self.test_loader)
+        #cnn_accy = self._evaluate(y_pred, y_true)
 
         if self.args["full_cov"] or self.args["diagonal"]:
             y_pred, y_true = self._eval_maha(self.test_loader, self._init_protos, self._protos)
@@ -70,7 +70,7 @@ class BaseLearner(object):
 
         nme_accy = None
 
-        return cnn_accy, nme_accy, maha_accy, maha_accy_train
+        return None, nme_accy, maha_accy, maha_accy_train
 
     def incremental_train(self):
         pass
@@ -171,7 +171,7 @@ class BaseLearner(object):
         maha_dist = []
         for class_index in range(self._total_classes):
             if self._cur_task == 0:
-                dist = self._mahalanobis(vectors, init_means[class_index])
+                dist = self._mahalanobis(vectors, class_means[class_index])
             else:
                 if self.args["ncm"]:
                     dist = self._mahalanobis(vectors, class_means[class_index])
@@ -197,7 +197,7 @@ class BaseLearner(object):
             class_means = self._tukeys_transform(class_means)
         x_minus_mu = F.normalize(vectors, p=2, dim=-1) - F.normalize(class_means, p=2, dim=-1)
         if cov is None:
-            cov = torch.eye(self._network.feature_dim)  # identity covariance matrix for euclidean distance
+            cov = torch.eye((self._network.feature_dim * 3) // 2)  # identity covariance matrix for euclidean distance
         inv_covmat = torch.linalg.pinv(cov).float().to(self._device)
         left_term = torch.matmul(x_minus_mu, inv_covmat)
         mahal = torch.matmul(left_term, x_minus_mu.T)
