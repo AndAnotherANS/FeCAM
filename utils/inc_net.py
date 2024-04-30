@@ -62,6 +62,7 @@ class BaseNet(nn.Module):
 
     def extract_vector(self, x):
         output = self.convnet(x)
+        #return output["features"]
         return torch.cat([output["features"], torch.nn.functional.adaptive_avg_pool2d(output["fmaps"][-2], 1).squeeze()], -1)
         #return torch.nn.functional.adaptive_avg_pool2d(output["fmaps"][-2], 1).squeeze()
 

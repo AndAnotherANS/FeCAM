@@ -4,6 +4,7 @@ import math
 import os
 
 import numpy as np
+import sklearn.mixture
 from sklearn.cluster import KMeans
 from sklearn.pipeline import make_pipeline
 from tqdm import tqdm
@@ -177,7 +178,7 @@ class FeCAM(BaseLearner):
                         self._diag_mat.append(self.diagonalization(cov))
         
         vectors, y_true = self._extract_vectors(train_loader)
-        #vectors = (vectors.T / (np.linalg.norm(vectors.T, axis=0) + EPSILON)).T
+        vectors = (vectors.T / (np.linalg.norm(vectors.T, axis=0) + EPSILON)).T
 
         classes = np.unique(y_true)
         max_cls = classes.max()
@@ -189,10 +190,14 @@ class FeCAM(BaseLearner):
             class_to_data[label].append(vector)
 
         for cls, data in class_to_data.items():
+            model = sklearn.mixture.GaussianMixture(n_components=5, covariance_type='tied', reg_covar=1e-3).fit(data)
+            self._ocsvm_models[cls] = model
+
+        '''for cls, data in class_to_data.items():
             if cls < 50:
                 continue
             if self.args["optimized_cov_alpha"] != 0:
-                optimize_covariance(data, max_cls, cls, self)
+                optimize_covariance(data, max_cls, cls, self)'''
 
 
         # ONE CLASS SVM AFTER GRID

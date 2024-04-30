@@ -75,7 +75,8 @@ def _train(args):
 
         json.dump(fecam_accy, file)
 
-        logging.info("training results: {}".format(train_acc["grouped"]))
+        if train_acc is not None:
+            logging.info("training results: {}".format(train_acc["grouped"]))
 
         if nme_accy is not None and fecam_accy is None:
             logging.info("CNN: {}".format(cnn_accy["grouped"]))

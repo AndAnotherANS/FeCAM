@@ -58,19 +58,19 @@ class BaseLearner(object):
         #cnn_accy = self._evaluate(y_pred, y_true)
 
         if self.args["full_cov"] or self.args["diagonal"]:
-            y_pred, y_true = self._eval_maha(self.test_loader, self._init_protos, self._protos)
-            y_pred_train, y_true_train = self._eval_maha(self.train_loader_full, self._init_protos, self._protos)
-            # y_pred, y_true = self._eval_ocsvm(self.test_loader)
+            #y_pred, y_true = self._eval_maha(self.test_loader, self._init_protos, self._protos)
+            #y_pred_train, y_true_train = self._eval_maha(self.train_loader_full, self._init_protos, self._protos)
+            y_pred, y_true = self._eval_ocsvm(self.test_loader)
             # y_pred, y_true = self._eval_isolation_forests(self.test_loader)
             # y_pred, y_true = self._eval_elliptic_envelopes(self.test_loader)
             maha_accy = self._evaluate(y_pred, y_true)
-            maha_accy_train = self._evaluate(y_pred_train, y_true_train)
+            #maha_accy_train = self._evaluate(y_pred_train, y_true_train)
         else:
             maha_accy = None
 
         nme_accy = None
 
-        return None, nme_accy, maha_accy, maha_accy_train
+        return None, nme_accy, maha_accy, None #maha_accy_train
 
     def incremental_train(self):
         pass
@@ -127,7 +127,7 @@ class BaseLearner(object):
         dists = np.zeros((len(vectors), len(self._ocsvm_models)))
 
         for i, (cls, model) in enumerate(self._ocsvm_models.items()):
-            dists[:, i] = model.decision_function(vectors)
+            dists[:, i] = model.score_samples(vectors)#model.decision_function(vectors)
         
         scores = dists  # [N, nb_classes], choose the one with the smallest distance
 

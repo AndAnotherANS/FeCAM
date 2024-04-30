@@ -23,7 +23,7 @@
     "alpha1": 1,
     "alpha2": 1,
     "ncm": false,
-    "tukey": true,
+    "tukey": false,
     "diagonal": false,
     "per_class": true,
     "full_cov": true,
